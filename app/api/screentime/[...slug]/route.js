@@ -2,9 +2,37 @@ import { Redis } from "@upstash/redis"
 
 export const dynamic = "force-dynamic"
 
-const redis = Redis.fromEnv()
 const TZ = process.env.SCREEN_TZ || "Asia/Shanghai"
 const TOKEN = process.env.SCREEN_TOKEN || ""
+
+let redisClient
+
+function getRedis() {
+  if (redisClient) return redisClient
+
+  const url =
+    process.env.UPSTASH_REDIS_REST_URL ||
+    process.env.STORAGE_REST_API_URL ||
+    process.env.STORAGE_URL ||
+    process.env.KV_REST_API_URL ||
+    process.env.KV_URL
+
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN ||
+    process.env.STORAGE_REST_API_TOKEN ||
+    process.env.STORAGE_TOKEN ||
+    process.env.KV_REST_API_TOKEN ||
+    process.env.KV_TOKEN
+
+  if (!url || !token) {
+    throw new Error(
+      "Missing Redis env vars. Connect Upstash Redis in Vercel Storage, then redeploy."
+    )
+  }
+
+  redisClient = new Redis({ url, token })
+  return redisClient
+}
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -67,12 +95,14 @@ function checkToken(req) {
 }
 
 async function writeEvent(day, event) {
+  const redis = getRedis()
   const key = `screentime:events:${day}`
   await redis.lpush(key, JSON.stringify(event))
   await redis.ltrim(key, 0, 499)
 }
 
 async function closeSession(app, now) {
+  const redis = getRedis()
   const activeKey = "screentime:active"
   const active = parseRedisValue(await redis.hget(activeKey, app))
 
@@ -110,6 +140,7 @@ async function closeSession(app, now) {
 }
 
 async function openSession(app, now) {
+  const redis = getRedis()
   const day = getDay(now)
   const event = {
     type: "open",
@@ -128,6 +159,7 @@ async function openSession(app, now) {
 }
 
 async function getToday(now) {
+  const redis = getRedis()
   const day = getDay(now)
   const totalsRaw = (await redis.hgetall(`screentime:totals:${day}`)) || {}
   const activeRaw = (await redis.hgetall("screentime:active")) || {}
@@ -169,6 +201,7 @@ async function getToday(now) {
 }
 
 async function getEvents(now) {
+  const redis = getRedis()
   const day = getDay(now)
   const events = await redis.lrange(`screentime:events:${day}`, 0, 99)
   return {
@@ -180,6 +213,7 @@ async function getEvents(now) {
 }
 
 async function resetToday(req, now) {
+  const redis = getRedis()
   const url = new URL(req.url)
   if (url.searchParams.get("confirm") !== "yes") {
     return {
@@ -232,6 +266,7 @@ async function handler(req, context) {
   if (action === "open") return json(await openSession(app, now))
   if (action === "close") return json(await closeSession(app, now))
   if (action === "toggle") {
+    const redis = getRedis()
     const active = parseRedisValue(await redis.hget("screentime:active", app))
     if (active?.start) return json(await closeSession(app, now))
     return json(await openSession(app, now))
